@@ -21,7 +21,7 @@ create table public.documents (
   name text not null,
   type text not null check (type in ('resume', 'cover-letter')),
   url text not null,
-  metadata jsonb default '{}'::jsonb,
+  metadata jsonb default '{}'::jsonb not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );

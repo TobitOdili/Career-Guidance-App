@@ -32,14 +32,17 @@ export const useDocuments = () => {
   }, [userData.id]);
 
   const addDocument = async (document: any) => {
-    if (!userData.id) return;
+    if (!userData.id) {
+      throw new Error('User ID is required');
+    }
 
     setIsLoading(true);
     setError(null);
     try {
       const newDoc = await saveDocument({
         ...document,
-        user_id: userData.id
+        user_id: userData.id,
+        metadata: document.metadata || {}
       });
       setDocuments(prev => [newDoc, ...prev]);
       return newDoc;

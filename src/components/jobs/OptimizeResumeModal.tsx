@@ -4,6 +4,7 @@ import { Job } from './types';
 import { useAI } from '../ai/AIProvider';
 import { useUser } from '../../contexts/UserContext';
 import { PDFService } from '../resume/services/pdfService';
+import { useDocuments, Document } from '../../hooks/useDocuments';
 
 interface OptimizeResumeModalProps {
   job: Job;
@@ -13,6 +14,7 @@ interface OptimizeResumeModalProps {
 const OptimizeResumeModal: React.FC<OptimizeResumeModalProps> = ({ job, onClose }) => {
   const { userData } = useUser();
   const { generateAIResponse } = useAI();
+  const { getResumeDocuments, addDocument } = useDocuments();
   const [selectedResume, setSelectedResume] = useState<string | null>(null);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -20,8 +22,7 @@ const OptimizeResumeModal: React.FC<OptimizeResumeModalProps> = ({ job, onClose 
   const [error, setError] = useState<string | null>(null);
 
   // Get user's saved resumes
-  const savedResumes = JSON.parse(localStorage.getItem(`resumes_${userData.id}`) || '[]');
-  const jobRequirements = job.requirements;
+  const savedResumes = getResumeDocuments();
 
   const handleOptimize = async () => {
     if (!selectedResume) {
@@ -33,9 +34,16 @@ const OptimizeResumeModal: React.FC<OptimizeResumeModalProps> = ({ job, onClose 
     setError(null);
 
     try {
-      // Get the resume data
-      const resumeData = JSON.parse(localStorage.getItem(`resume_data_${selectedResume}`) || '');
-      if (!resumeData) throw new Error('Resume data not found');
+      // Get the resume data from the selected document
+      const selectedDocument = savedResumes.find(doc => doc.id === selectedResume);
+      if (!selectedDocument?.metadata?.resumeData) {
+        throw new Error('Resume data not found');
+      }
+
+      const resumeData = selectedDocument.metadata.resumeData;
+
+      // Add selected skills to the optimization request
+      const skillsToOptimize = [...selectedSkills, ...userData.skills];
 
       const prompt = `Please optimize this resume for a ${job.title} position at ${job.company}.
 
@@ -43,26 +51,39 @@ Resume Data:
 ${JSON.stringify(resumeData, null, 2)}
 
 Job Requirements:
-${jobRequirements.join('\n')}
+${job.requirements.join('\n')}
 
-Current Skills: ${selectedSkills.join(', ')}
+Skills to Highlight:
+${skillsToOptimize.join(', ')}
 
-IMPORTANT: DO NOT add, remove, or modify any:
-- Education entries
-- Work experience positions
-- Company names or dates
+Please optimize the resume by:
+1. Enhancing the professional summary to align with the job requirements
+2. Highlighting relevant experience and achievements
+3. Incorporating the specified skills naturally
+4. Using strong action verbs
+5. Quantifying achievements where possible
 
-Only optimize the following elements:
-1. Highlighting relevant experience
-2. Professional summary to better align with the job requirements
-3. Add selected skills to the existing skills list
-4. Enhance responsibilities within existing work experience entries (do not add new jobs)
-5. Use stronger action verbs and quantify achievements where possible
-
-Return ONLY the optimized resume data in valid JSON format, with no additional text or formatting.`;
+Return the optimized resume data in valid JSON format matching the original structure.`;
 
       const response = await generateAIResponse(prompt);
       const optimizedResume = JSON.parse(response);
+
+      // Generate PDF
+      const pdfUrl = await PDFService.generatePDF(optimizedResume);
+
+      // Save to Supabase
+      await addDocument({
+        name: `${optimizedResume.full_name}'s Resume - ${job.company}`,
+        type: 'resume',
+        url: pdfUrl,
+        metadata: {
+          company: job.company,
+          position: job.title,
+          optimizedFor: job.id,
+          resumeData: optimizedResume
+        }
+      });
+
       setOptimizedData(optimizedResume);
 
     } catch (err) {
@@ -76,23 +97,7 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
     if (!optimizedData) return;
 
     try {
-      const url = await PDFService.generatePDF(optimizedData);
-      
-      // Save optimized resume
-      const savedResumes = JSON.parse(localStorage.getItem(`resumes_${userData.id}`) || '[]');
-      const newResume = {
-        id: Date.now().toString(),
-        name: `${optimizedData.full_name}'s Optimized Resume - ${job.company}`,
-        createdAt: new Date(),
-        url,
-        type: 'resume'
-      };
-      savedResumes.push(newResume);
-      localStorage.setItem(`resumes_${userData.id}`, JSON.stringify(savedResumes));
-      localStorage.setItem(`resume_data_${newResume.id}`, JSON.stringify(optimizedData));
-
-      // Download the file
-      const response = await fetch(url);
+      const response = await fetch(optimizedData.url);
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -102,7 +107,6 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(downloadUrl);
-
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to download resume');
@@ -129,10 +133,14 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
               <div className="mb-6">
                 <h4 className="text-sm font-medium text-gray-700 mb-2">Select Resume to Optimize</h4>
                 {savedResumes.length === 0 ? (
-                  <p className="text-gray-600">No resume found. Please create a resume first.</p>
+                  <div className="text-center py-8">
+                    <Bot className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <p className="text-gray-600 mb-2">No resumes found</p>
+                    <p className="text-sm text-gray-500">Create a resume first using the Resume Builder</p>
+                  </div>
                 ) : (
                   <div className="space-y-2">
-                    {savedResumes.map((resume: any) => (
+                    {savedResumes.map((resume) => (
                       <label
                         key={resume.id}
                         className="flex items-center gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer"
@@ -147,7 +155,7 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
                         <div>
                           <p className="font-medium text-gray-800">{resume.name}</p>
                           <p className="text-sm text-gray-500">
-                            Created {new Date(resume.createdAt).toLocaleDateString()}
+                            Created {new Date(resume.created_at).toLocaleDateString()}
                           </p>
                         </div>
                       </label>
@@ -157,27 +165,33 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
               </div>
 
               {/* Skills Selection */}
-              <div className="grid grid-cols-2 gap-2">
-                {jobRequirements.map((skill, index) => (
-                  <label
-                    key={index}
-                    className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedSkills.includes(skill)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedSkills([...selectedSkills, skill]);
-                        } else {
-                          setSelectedSkills(selectedSkills.filter(s => s !== skill));
-                        }
-                      }}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-700">{skill}</span>
-                  </label>
-                ))}
+              <div className="mb-6">
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Additional Skills to Highlight</h4>
+                <p className="text-sm text-gray-600 mb-3">
+                  Select any additional skills you'd like to emphasize for this position:
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {job.requirements.map((skill, index) => (
+                    <label
+                      key={index}
+                      className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSkills.includes(skill)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedSkills([...selectedSkills, skill]);
+                          } else {
+                            setSelectedSkills(selectedSkills.filter(s => s !== skill));
+                          }
+                        }}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">{skill}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </>
           )}
@@ -205,66 +219,60 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
           )}
 
           {optimizedData && (
-            <div className="text-center">
-              <div className="flex items-center justify-center gap-2 text-green-600 mb-6">
-                <CheckCircle className="w-6 h-6" />
+            <div className="mb-4">
+              <div className="flex items-center gap-2 text-green-600 mb-4">
+                <CheckCircle className="w-5 h-5" />
                 <span className="font-medium">Resume Optimized!</span>
               </div>
               
-              {/* Resume Preview */}
-              <div className="mb-6 text-left bg-gray-50 p-6 rounded-lg max-h-96 overflow-y-auto">
-                <div className="prose max-w-none">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-4">Resume Preview</h3>
-                  
-                  {/* Contact Info */}
-                  <div className="mb-6">
-                    <h2 className="text-xl font-bold text-gray-900">{optimizedData.full_name}</h2>
-                    <p className="text-gray-600">
-                      {optimizedData.contact_email} • {optimizedData.phone_number}
-                    </p>
-                    <p className="text-gray-600">{optimizedData.location}</p>
+              <div className="prose max-w-none bg-gray-50 p-6 rounded-lg mb-6">
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">Preview</h3>
+                
+                <div className="space-y-6">
+                  <div>
+                    <h4 className="text-base font-medium text-gray-700">Professional Summary</h4>
+                    <p className="text-gray-600">{optimizedData.summary}</p>
                   </div>
 
-                  {/* Summary */}
-                  <div className="mb-6">
-                    <h4 className="text-md font-semibold text-gray-800 mb-2">Professional Summary</h4>
-                    <p className="text-gray-700">{optimizedData.summary}</p>
-                  </div>
-
-                  {/* Experience */}
-                  <div className="mb-6">
-                    <h4 className="text-md font-semibold text-gray-800 mb-2">Experience</h4>
+                  <div>
+                    <h4 className="text-base font-medium text-gray-700">Experience</h4>
                     {optimizedData.work_experience?.map((exp: any, index: number) => (
                       <div key={index} className="mb-4">
                         <h5 className="font-medium text-gray-800">{exp.job_title}</h5>
                         <p className="text-sm text-gray-600">{exp.company_name}</p>
-                        <p className="text-sm text-gray-500 mb-2">
+                        <p className="text-sm text-gray-500">
                           {exp.start_date} - {exp.end_date || 'Present'}
                         </p>
-                        <ul className="list-disc list-inside text-gray-700">
+                        <ul className="list-disc list-inside mt-2">
                           {exp.responsibilities.map((resp: string, i: number) => (
-                            <li key={i} className="text-sm">{resp}</li>
+                            <li key={i} className="text-sm text-gray-600">{resp}</li>
                           ))}
                         </ul>
                       </div>
                     ))}
                   </div>
+
+                  <div>
+                    <h4 className="text-base font-medium text-gray-700">Skills</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {optimizedData.skills?.map((skill: string, index: number) => (
+                        <span
+                          key={index}
+                          className="px-2 py-1 bg-blue-100 text-blue-700 text-sm rounded-full"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
-              
-              <button
-                onClick={handleDownload}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 mx-auto"
-              >
-                <Download className="w-4 h-4" />
-                Download Optimized Resume
-              </button>
             </div>
           )}
         </div>
 
         <div className="p-4 border-t">
-          {!optimizedData && (
+          {!optimizedData ? (
             <button
               onClick={handleOptimize}
               disabled={!selectedResume || isOptimizing || savedResumes.length === 0}
@@ -282,6 +290,26 @@ Return ONLY the optimized resume data in valid JSON format, with no additional t
                 </>
               )}
             </button>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                onClick={handleDownload}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Download Optimized Resume
+              </button>
+              <button
+                onClick={() => {
+                  setOptimizedData(null);
+                  setSelectedResume(null);
+                  setSelectedSkills([]);
+                }}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                Create Another
+              </button>
+            </div>
           )}
         </div>
       </div>

@@ -5,13 +5,16 @@ import { ResumeData } from './types';
 import QuestionForm from './QuestionForm';
 import { PDFService } from './services/pdfService';
 import { RESUME_BUILDER_STEPS } from './constants';
+import { useDocuments } from '../../hooks/useDocuments';
+import { useUser } from '../../contexts/UserContext';
 
 interface ResumeBuilderProps {
   onClose: () => void;
-  userId: string;
 }
 
-const ResumeBuilder: React.FC<ResumeBuilderProps> = ({ onClose, userId }) => {
+const ResumeBuilder: React.FC<ResumeBuilderProps> = ({ onClose }) => {
+  const { userData } = useUser();
+  const { addDocument } = useDocuments();
   const { generateAIResponse } = useAI();
   const [currentStep, setCurrentStep] = useState(0);
   const [resumeData, setResumeData] = useState<Partial<ResumeData>>({
@@ -59,41 +62,38 @@ const ResumeBuilder: React.FC<ResumeBuilderProps> = ({ onClose, userId }) => {
     setError(null);
 
     try {
+      console.log('Generating PDF with data:', resumeData);
+
       // Generate PDF
       const url = await PDFService.generatePDF(resumeData as ResumeData);
+      console.log('Generated PDF URL:', url);
 
-      // Create unique ID for this resume
-      const resumeId = Date.now().toString();
+      // Save to Supabase
+      try {
+        await addDocument({
+          name: resumeData.full_name ? `${resumeData.full_name}'s Resume` : 'New Resume',
+          type: 'resume',
+          url,
+          metadata: {
+            resumeData
+          }
+        });
+        console.log('Successfully saved to Supabase');
+      } catch (dbError) {
+        console.error('Failed to save to Supabase:', dbError);
+        // Continue with download even if Supabase save fails
+      }
 
-      // Save resume metadata
-      const savedResumes = JSON.parse(localStorage.getItem(`resumes_${userId}`) || '[]');
-      const newResume = {
-        id: resumeId,
-        name: resumeData.full_name ? `${resumeData.full_name}'s Resume` : 'New Resume',
-        createdAt: new Date(),
-        url,
-        type: 'resume'
-      };
-      savedResumes.push(newResume);
-      localStorage.setItem(`resumes_${userId}`, JSON.stringify(savedResumes));
-
-      // Save resume data for future optimization
-      localStorage.setItem(`resume_data_${resumeId}`, JSON.stringify(resumeData));
-
-      // Trigger download
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = `resume_${Date.now()}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(downloadUrl);
-
-      onClose();
+      // Download the file
+      try {
+        await PDFService.downloadPDF(url, `resume_${Date.now()}.pdf`);
+        onClose();
+      } catch (downloadError) {
+        console.error('Failed to download PDF:', downloadError);
+        throw new Error('Failed to download the generated PDF');
+      }
     } catch (err) {
+      console.error('PDF generation error:', err);
       setError(err instanceof Error ? err.message : 'Failed to generate PDF');
     } finally {
       setIsGenerating(false);
